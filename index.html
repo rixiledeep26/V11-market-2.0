@@ -108,7 +108,7 @@ function connectDeriv(){
  stop();demoMode=false;markets=[];selected=null;lastUpdated=null;
  const tf=Number($("tf").value);const sec=tf;
  $("status").textContent="CONNECTING…";setMsg("Connecting to Deriv public market-data stream. No account login or token is used.");
- try{ws=new WebSocket("wss://ws.binaryws.com/websockets/v3")ws=new WebSocket("wss://ws.derivws.com/websockets/v3?app_id=34FMVWLTvZE9zSkH1pKW6");;}catch(e){$("status").textContent="ERROR";setMsg("Could not create WebSocket: "+e.message,"error");return;}
+ try{ws=new WebSocket("wss://ws.derivws.com/websockets/v3?app_id=34FMVWLTvZE9zSkH1pKW6");;}catch(e){$("status").textContent="ERROR";setMsg("Could not create WebSocket: "+e.message,"error");return;}
  const candleReqs=new Set();
  ws.onopen=()=>{
   $("status").textContent="CONNECTED · LOADING";
