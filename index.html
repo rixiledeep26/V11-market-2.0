@@ -108,8 +108,9 @@ function connectDeriv(){
  stop();demoMode=false;markets=[];selected=null;lastUpdated=null;
  const tf=Number($("tf").value);const sec=tf;
  $("status").textContent="CONNECTING…";setMsg("Connecting to Deriv public market-data stream. No account login or token is used.");
- try{ws=new WebSocket("wss://ws.derivws.com/websockets/v3?app_id=34FMVWLTvZE9zSkH1pKW6");;}catch(e){$("status").textContent="ERROR";setMsg("Could not create WebSocket: "+e.message,"error");return;}
+ try{ws=new WebSocket("wss://ws.binaryws.com/websockets/v3");}catch(e){$("status").textContent="ERROR";setMsg("Could not create WebSocket: "+e.message,"error");return;}
  const candleReqs=new Set();
+ const connectionWatchdog=setTimeout(()=>{if(ws && ws.readyState===WebSocket.OPEN && markets.length===0){setMsg("WebSocket opened but no market list arrived. Try again later; if this repeats, the endpoint may be blocked or the API response is failing.","error");}},10000);
  ws.onopen=()=>{
   $("status").textContent="CONNECTED · LOADING";
   ws.send(JSON.stringify({active_symbols:"brief",product_type:"basic",req_id:1}));
@@ -118,6 +119,7 @@ function connectDeriv(){
   let d;try{d=JSON.parse(ev.data)}catch(e){return;}
   if(d.error){setMsg("Data source error: "+d.error.message,"error");return;}
   if(d.msg_type==="active_symbols"){
+   clearTimeout(connectionWatchdog);
    const avail=d.active_symbols||[];
    const chosen=$("market").value==="forex" ? avail.filter(a=>/^(frx.*|.*XAU.*|.*GOLD.*)$/i.test(a.symbol||"") && /forex|gold|metal/i.test((a.display_name||"")+" "+(a.market_display_name||"")+" "+(a.submarket_display_name||""))).slice(0,12).map(a=>({symbol:a.symbol,label:a.display_name||a.symbol})) : derivSymbols.filter(s=>avail.some(a=>a.symbol===s.symbol)).slice(0,10);
    if(!chosen.length){setMsg("No matching symbols were returned for this market group. Deriv symbol availability varies; try another group or timeframe.","error");$("status").textContent="NO MATCHING SYMBOLS";return;}
@@ -137,13 +139,13 @@ function connectDeriv(){
    const m=markets.find(x=>x.symbol===d.tick.symbol);if(m){m.price=Number(d.tick.quote);m.tickTime=Number(d.tick.epoch)*1000;m.updatedAt=m.tickTime;lastUpdated=m.tickTime;if(m.candles?.length){const last=m.candles[m.candles.length-1];last.close=m.price;last.high=Math.max(last.high,m.price);last.low=Math.min(last.low,m.price);analyze(m);}render();}
   }
  };
- ws.onerror=()=>{ $("status").textContent="CONNECTION ERROR";setMsg("Could not connect to the public market-data stream. Try again or check whether your network blocks WebSockets.","error");};
- ws.onclose=()=>{if(!demoMode){$("status").textContent="DISCONNECTED";}};
+ ws.onerror=()=>{ clearTimeout(connectionWatchdog); $("status").textContent="CONNECTION ERROR";setMsg("The browser could not establish the public WebSocket connection. This can be caused by network filtering or a blocked WebSocket endpoint. No market data was received; do not use this dashboard for a trade until it connects.","error");};
+ ws.onclose=(ev)=>{clearTimeout(connectionWatchdog);if(!demoMode){$("status").textContent="DISCONNECTED";if(ev && ev.code && ev.code!==1000)setMsg("WebSocket closed before data loaded (code "+ev.code+(ev.reason?": "+ev.reason:"")+"). Check connection/network and try again.","error");}};
 }
 $("connect").addEventListener("click",()=>{connectDeriv();});
 $("stop").addEventListener("click",()=>{stop();setMsg("Stream stopped by user.");});
 $("demo").addEventListener("click",demo);
-$("record").addEventListener("click",()=>{const m=markets.find(x=>x.symbol===selected);if(!m||!m.features||![BUY,SELL].includes(m.side)){setMsg("Select a BUY/SELL signal first; WAIT and demo rows cannot be recorded.","error");return;}const result=prompt("After you manually review the setup, record outcome reward from -1 (loss) to +1 (win). Use 0 for breakeven. This only updates local browser learning.","1");if(result===null)return;const reward=Number(result);if(!Number.isFinite(reward)||reward< -1||reward>1){setMsg("Enter a number from -1 to +1.","error");return;}const f=m.features,key=`${m.symbol}|${m.side}|${bucket(f.trend,f.momentum,f.volatility,f.regime)}`,d=memoryStore(),v=d[key]||{n:0,avg:0,w:0};v.n+=1;v.avg+=(reward-v.avg)/v.n;if(reward>0)v.w+=1;d[key]=v;memorySave(d);setMsg(`Saved outcome locally for ${m.symbol}. Samples for this context: ${v.n}. Reconnect to recalculate.`,"success");});
+$("record").addEventListener("click",()=>{const m=markets.find(x=>x.symbol===selected);if(!m||!m.features||!["BUY","SELL"].includes(m.side)){setMsg("Select a BUY/SELL signal first; WAIT and demo rows cannot be recorded.","error");return;}const result=prompt("After you manually review the setup, record outcome reward from -1 (loss) to +1 (win). Use 0 for breakeven. This only updates local browser learning.","1");if(result===null)return;const reward=Number(result);if(!Number.isFinite(reward)||reward< -1||reward>1){setMsg("Enter a number from -1 to +1.","error");return;}const f=m.features,key=`${m.symbol}|${m.side}|${bucket(f.trend,f.momentum,f.volatility,f.regime)}`,d=memoryStore(),v=d[key]||{n:0,avg:0,w:0};v.n+=1;v.avg+=(reward-v.avg)/v.n;if(reward>0)v.w+=1;d[key]=v;memorySave(d);setMsg(`Saved outcome locally for ${m.symbol}. Samples for this context: ${v.n}. Reconnect to recalculate.`,"success");});
 $("market").addEventListener("change",()=>{if($("market").value==="forex")setMsg("Forex/gold: checking symbols from Deriv public active-symbols feed. Availability may be limited.");else setMsg("Deriv synthetic indices selected.");});
 window.addEventListener("beforeunload",stop);
 })();
