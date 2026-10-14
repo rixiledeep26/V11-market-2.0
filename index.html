@@ -43,7 +43,8 @@
 <script>
 (()=> {
 const $=id=>document.getElementById(id);
-let ws=null, timer=null, markets=[], selected=null, demoMode=false, lastUpdated=null;
+let ws=null, timer=null, markets=[], selected=null, demoMode=false, lastUpdated=null, endpointAttempt=0, connectionWatchdog=null;
+const endpoints=["wss://ws.derivws.com/websockets/v3?app_id=34FMVWLTvZE9zSkH1pKW6", "wss://ws.binaryws.com/websockets/v3"];
 const derivSymbols=[
  {symbol:"R_10",label:"Volatility 10 Index"},{symbol:"R_25",label:"Volatility 25 Index"},{symbol:"R_50",label:"Volatility 50 Index"},{symbol:"R_75",label:"Volatility 75 Index"},{symbol:"R_100",label:"Volatility 100 Index"},{symbol:"1HZ10V",label:"Volatility 10 (1s)"},{symbol:"1HZ25V",label:"Volatility 25 (1s)"},{symbol:"1HZ50V",label:"Volatility 50 (1s)"},{symbol:"1HZ75V",label:"Volatility 75 (1s)"},{symbol:"1HZ100V",label:"Volatility 100 (1s)"}
 ];
@@ -105,31 +106,39 @@ function demo(){
  ];selected=markets[0].symbol;lastUpdated=now;$("status").textContent="DEMO ONLY";setMsg("Demo preview loaded. These prices are fictional and must not be used for trading.","error");render();
 }
 function connectDeriv(){
- stop();demoMode=false;markets=[];selected=null;lastUpdated=null;
+ stop();demoMode=false;markets=[];selected=null;lastUpdated=null;endpointAttempt=0;
+ connectEndpoint();
+}
+function connectEndpoint(){
  const tf=Number($("tf").value);const sec=tf;
- $("status").textContent="CONNECTING…";setMsg("Connecting to Deriv public market-data stream. No account login or token is used.");
- try{ws=new WebSocket("wss://ws.binaryws.com/websockets/v3");}catch(e){$("status").textContent="ERROR";setMsg("Could not create WebSocket: "+e.message,"error");return;}
- const candleReqs=new Set();
- const connectionWatchdog=setTimeout(()=>{if(ws && ws.readyState===WebSocket.OPEN && markets.length===0){setMsg("WebSocket opened but no market list arrived. Try again later; if this repeats, the endpoint may be blocked or the API response is failing.","error");}},10000);
- ws.onopen=()=>{
+ if(endpointAttempt>=endpoints.length){$("status").textContent="CONNECTION FAILED";setMsg("Both documented Deriv WebSocket endpoints failed from this browser/network. No market data was received. Check whether your network/browser blocks WebSockets, then try again.","error");return;}
+ const thisAttempt=endpointAttempt++;
+ $("status").textContent="CONNECTING…";setMsg("Connecting to Deriv public market data (connection attempt "+(thisAttempt+1)+" of "+endpoints.length+").");
+ let thisWs;
+ try{thisWs=new WebSocket(endpoints[thisAttempt]);ws=thisWs;}catch(e){setMsg("Could not create WebSocket: "+e.message,"error");connectEndpoint();return;}
+ let gotSymbols=false, settled=false;
+ const watchdog=setTimeout(()=>{if(thisWs===ws && !gotSymbols){setMsg("No market list received from this endpoint. Trying the alternate Deriv endpoint…","error");try{thisWs.close();}catch(e){}if(!settled){settled=true;connectEndpoint();}}},10000);
+ thisWs.onopen=()=>{
+  if(thisWs!==ws)return;
   $("status").textContent="CONNECTED · LOADING";
-  ws.send(JSON.stringify({active_symbols:"brief",product_type:"basic",req_id:1}));
+  thisWs.send(JSON.stringify({active_symbols:"brief",product_type:"basic",req_id:1}));
  };
- ws.onmessage=ev=>{
+ thisWs.onmessage=ev=>{
+  if(thisWs!==ws)return;
   let d;try{d=JSON.parse(ev.data)}catch(e){return;}
-  if(d.error){setMsg("Data source error: "+d.error.message,"error");return;}
+  if(d.error){setMsg("Deriv API error: "+d.error.message,"error");if(!gotSymbols){clearTimeout(watchdog);if(!settled){settled=true;try{thisWs.close();}catch(e){}connectEndpoint();}}return;}
   if(d.msg_type==="active_symbols"){
-   clearTimeout(connectionWatchdog);
+   gotSymbols=true;settled=true;clearTimeout(watchdog);
    const avail=d.active_symbols||[];
    const chosen=$("market").value==="forex" ? avail.filter(a=>/^(frx.*|.*XAU.*|.*GOLD.*)$/i.test(a.symbol||"") && /forex|gold|metal/i.test((a.display_name||"")+" "+(a.market_display_name||"")+" "+(a.submarket_display_name||""))).slice(0,12).map(a=>({symbol:a.symbol,label:a.display_name||a.symbol})) : derivSymbols.filter(s=>avail.some(a=>a.symbol===s.symbol)).slice(0,10);
-   if(!chosen.length){setMsg("No matching symbols were returned for this market group. Deriv symbol availability varies; try another group or timeframe.","error");$("status").textContent="NO MATCHING SYMBOLS";return;}
+   if(!chosen.length){setMsg("Connected to Deriv, but no matching symbols were returned for this market group. Try the other market group.","error");$("status").textContent="NO MATCHING SYMBOLS";return;}
    chosen.forEach((s,i)=>{
     const m={...s,timeframe:$("tf").selectedOptions[0].text,candles:[],side:"WAIT",confidence:0};
     markets.push(m);
-    ws.send(JSON.stringify({ticks_history:s.symbol,count:120,end:"latest",style:"candles",granularity:sec,req_id:100+i}));
-    ws.send(JSON.stringify({ticks:s.symbol,subscribe:1,req_id:200+i}));
+    thisWs.send(JSON.stringify({ticks_history:s.symbol,count:120,end:"latest",style:"candles",granularity:sec,req_id:100+i}));
+    thisWs.send(JSON.stringify({ticks:s.symbol,subscribe:1,req_id:200+i}));
    });
-   selected=markets[0]?.symbol;render();
+   selected=markets[0]?.symbol;render();setMsg("Market list loaded from Deriv. Loading candles and live ticks…","success");
   }
   if(d.msg_type==="candles"||d.msg_type==="history"){
    const m=markets.find(x=>x.symbol===d.echo_req?.ticks_history);
@@ -139,9 +148,15 @@ function connectDeriv(){
    const m=markets.find(x=>x.symbol===d.tick.symbol);if(m){m.price=Number(d.tick.quote);m.tickTime=Number(d.tick.epoch)*1000;m.updatedAt=m.tickTime;lastUpdated=m.tickTime;if(m.candles?.length){const last=m.candles[m.candles.length-1];last.close=m.price;last.high=Math.max(last.high,m.price);last.low=Math.min(last.low,m.price);analyze(m);}render();}
   }
  };
- ws.onerror=()=>{ clearTimeout(connectionWatchdog); $("status").textContent="CONNECTION ERROR";setMsg("The browser could not establish the public WebSocket connection. This can be caused by network filtering or a blocked WebSocket endpoint. No market data was received; do not use this dashboard for a trade until it connects.","error");};
- ws.onclose=(ev)=>{clearTimeout(connectionWatchdog);if(!demoMode){$("status").textContent="DISCONNECTED";if(ev && ev.code && ev.code!==1000)setMsg("WebSocket closed before data loaded (code "+ev.code+(ev.reason?": "+ev.reason:"")+"). Check connection/network and try again.","error");}};
+ thisWs.onerror=()=>{if(thisWs!==ws)return;$("status").textContent="CONNECTION ERROR";};
+ thisWs.onclose=ev=>{
+  clearTimeout(watchdog);
+  if(thisWs!==ws)return;
+  if(!demoMode&&!gotSymbols&&!settled){settled=true;setMsg("Connection closed on endpoint attempt "+(thisAttempt+1)+" (code "+(ev?.code||"unknown")+"). Trying alternate endpoint…","error");connectEndpoint();return;}
+  if(!demoMode){$("status").textContent="DISCONNECTED";if(ev&&ev.code&&ev.code!==1000)setMsg("WebSocket closed (code "+ev.code+(ev.reason?": "+ev.reason:" ")+ "). No further data will arrive until reconnected.","error");}
+ };
 }
+
 $("connect").addEventListener("click",()=>{connectDeriv();});
 $("stop").addEventListener("click",()=>{stop();setMsg("Stream stopped by user.");});
 $("demo").addEventListener("click",demo);
